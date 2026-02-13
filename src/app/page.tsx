@@ -1,5 +1,5 @@
 'use client';
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import LoginPage from '@/components/LoginPage';
 import AssessmentForm from '@/components/AssessmentForm';
 import ResultsDashboard from '@/components/ResultsDashboard';
@@ -9,6 +9,7 @@ import { generateInterpretation } from '@/lib/ai/interpreter';
 import { generateClinicalPDF } from '@/lib/pdf/generator';
 import { logAudit } from '@/lib/audit';
 import { DISCLAIMER_SHORT, APP_VERSION } from '@/lib/constants';
+import { loadHistory, saveHistory, loadUser, saveUser, clearUser, deleteFromHistory } from '@/lib/storage';
 import { v4 as uuidv4 } from 'uuid';
 
 type View = 'login' | 'dashboard' | 'form' | 'results';
@@ -30,14 +31,26 @@ export default function HomePage() {
   const [history, setHistory] = useState<AssessmentResult[]>([]);
   const [loading, setLoading] = useState(false);
 
+  // Load persisted data on mount
+  useEffect(() => {
+    const savedUser = loadUser();
+    if (savedUser) {
+      setUser(savedUser);
+      setView('dashboard');
+    }
+    setHistory(loadHistory());
+  }, []);
+
   const handleLogin = useCallback((u: User) => {
     setUser(u);
+    saveUser(u);
     logAudit({ userId: u.email, action: 'login', entityType: 'user', entityId: u.email, details: {} });
     setView('dashboard');
   }, []);
 
   const handleLogout = () => {
     setUser(null);
+    clearUser();
     setView('login');
   };
 
@@ -76,7 +89,11 @@ export default function HomePage() {
         aiInterpretation: interp,
         version: APP_VERSION,
       };
-      setHistory(prev => [assessmentResult, ...prev]);
+      setHistory(prev => {
+        const updated = [assessmentResult, ...prev];
+        saveHistory(updated);
+        return updated;
+      });
       setView('results');
     } catch (err) {
       console.error('Calculation error:', err);
@@ -159,7 +176,18 @@ export default function HomePage() {
             history={history}
             onNewAssessment={() => setView('form')}
             onViewResult={(id) => {
-              setView('results');
+              const found = history.find(h => h.id === id);
+              if (found) {
+                setCardiac(found.cardiacResult);
+                setRenal(found.renalResult);
+                setInterpretation(found.aiInterpretation || null);
+                setPatient({ name: found.patientId } as PatientData);
+                setView('results');
+              }
+            }}
+            onDeleteResult={(id) => {
+              const updated = deleteFromHistory(id);
+              setHistory(updated);
             }}
           />
         )}
@@ -184,10 +212,11 @@ export default function HomePage() {
 }
 
 // Dashboard sub-component
-function DashboardView({ history, onNewAssessment, onViewResult }: {
+function DashboardView({ history, onNewAssessment, onViewResult, onDeleteResult }: {
   history: AssessmentResult[];
   onNewAssessment: () => void;
   onViewResult: (id: string) => void;
+  onDeleteResult: (id: string) => void;
 }) {
   const classLabels: Record<string, string> = { low: 'Baixo', moderate: 'Moderado', high: 'Alto', very_high: 'Muito Alto' };
 
@@ -249,6 +278,7 @@ function DashboardView({ history, onNewAssessment, onViewResult }: {
                   <th style={{ textAlign: 'center', padding: '10px 8px', fontWeight: 700 }}>Risco Cardio 10a</th>
                   <th style={{ textAlign: 'center', padding: '10px 8px', fontWeight: 700 }}>KDIGO</th>
                   <th style={{ textAlign: 'center', padding: '10px 8px', fontWeight: 700 }}>Data</th>
+                  <th style={{ textAlign: 'center', padding: '10px 8px', fontWeight: 700 }}>Ações</th>
                 </tr>
               </thead>
               <tbody>
@@ -268,6 +298,11 @@ function DashboardView({ history, onNewAssessment, onViewResult }: {
                     </td>
                     <td style={{ textAlign: 'center', padding: '12px 8px', color: 'var(--text-muted)' }}>
                       {new Date(h.assessmentDate).toLocaleDateString('pt-BR')}
+                    </td>
+                    <td style={{ textAlign: 'center', padding: '12px 8px' }}>
+                      <button className="btn btn-sm btn-danger" onClick={(e) => { e.stopPropagation(); onDeleteResult(h.id); }}>
+                        🗑️
+                      </button>
                     </td>
                   </tr>
                 ))}
